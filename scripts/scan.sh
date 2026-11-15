@@ -47,6 +47,7 @@ esac
 parse_bool fail-on-install-script "${INPUT_FAIL_ON_INSTALL_SCRIPT:-true}"; FAIL_INSTALL=$REPLY
 parse_bool fail-on-source-change "${INPUT_FAIL_ON_SOURCE_CHANGE:-true}"; FAIL_SOURCE=$REPLY
 parse_bool fail-on-error "${INPUT_FAIL_ON_ERROR:-false}"; FAIL_ON_ERROR=$REPLY
+parse_bool fail-on-file-removal "${INPUT_FAIL_ON_FILE_REMOVAL:-true}"; FAIL_REMOVAL=$REPLY
 COMMENT_MODE=$(lower "$(trim "${INPUT_COMMENT:-always}")")
 case "$COMMENT_MODE" in
   always|on-findings|never) ;;
@@ -149,9 +150,16 @@ for file in "${FILES[@]}"; do
 
   base_mode=$(git_mode "$BASE_SHA" "$file")
   if [ -z "$head_mode" ]; then
-    if [ -n "$base_mode" ]; then add_entry "$file" skipped false "removed in this PR"
-    else add_entry "$file" skipped false "not found"; fi
-    echo "::notice::$file not found in this PR — nothing to scan"
+    if [ -n "$base_mode" ]; then
+      # Deleted or renamed: there is nothing to diff, but silently passing
+      # would let a PR drop its lockfile (and every finding in it) unnoticed,
+      # so render.jq turns this into a finding.
+      add_entry "$file" removed false "removed in this PR"
+      echo "::notice::$file was removed in this PR — reporting it as a finding"
+    else
+      add_entry "$file" skipped false "not found"
+      echo "::notice::$file not found in this PR — nothing to scan"
+    fi
     continue
   fi
   # Only regular files are read. A symlink could point anywhere on the runner,
@@ -185,7 +193,8 @@ done
 
 CFG=$(jq -nc --arg marker "$MARKER" --arg mode "$MODE" --arg severity "$SEVERITY" \
   --argjson failInstall "$FAIL_INSTALL" --argjson failSource "$FAIL_SOURCE" --argjson failOnError "$FAIL_ON_ERROR" \
-  '{marker: $marker, mode: $mode, severity: $severity, failInstall: $failInstall, failSource: $failSource, failOnError: $failOnError}')
+  --argjson failRemoval "$FAIL_REMOVAL" \
+  '{marker: $marker, mode: $mode, severity: $severity, failInstall: $failInstall, failSource: $failSource, failOnError: $failOnError, failRemoval: $failRemoval}')
 jq -s --argjson cfg "$CFG" -f "$HERE/render.jq" "$WORK/entries.jsonl" > "$WORK/report.json"
 
 read -r SCANNED ERRORS FLAGGED BLOCKING < <(jq -r '"\(.scanned) \(.errors) \(.flagged) \(.blocking)"' "$WORK/report.json")
@@ -200,8 +209,10 @@ fi
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {
-    # flagged-count stays empty when nothing was scanned (documented behaviour)
-    if [ "$SCANNED" -gt 0 ]; then echo "flagged-count=$FLAGGED"; fi
+    # flagged-count stays empty when nothing was scanned and nothing was
+    # flagged out-of-band (e.g. a removed file), so an empty value still
+    # means "nothing to report" (documented behaviour)
+    if [ "$SCANNED" -gt 0 ] || [ "$FLAGGED" -gt 0 ]; then echo "flagged-count=$FLAGGED"; fi
     echo "blocking-count=$BLOCKING"
     echo "error-count=$ERRORS"
   } >> "$GITHUB_OUTPUT"
@@ -281,7 +292,7 @@ upsert_comment() { # body.md create-if-missing
   fi
 }
 
-if [ "$SCANNED" -eq 0 ] && [ "$ERRORS" -eq 0 ]; then
+if [ "$SCANNED" -eq 0 ] && [ "$ERRORS" -eq 0 ] && [ "$FLAGGED" -eq 0 ]; then
   # Nothing to report, but an earlier push may have left a comment with findings.
   if [ "$COMMENT_MODE" != never ]; then upsert_comment "$WORK/comment.md" false; fi
   exit 0

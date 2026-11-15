@@ -85,6 +85,7 @@ The comment is edited in place on every push, and the same report goes to the jo
 | Your own root `preinstall` / `install` / `postinstall` / `prepare` script is added or changed | yes | `fail-on-install-script: false` |
 | The same version now resolves to a different tarball URL or integrity hash, the tarball is a different package or version than the lockfile declares, or an upgrade moves to a different host | yes | `fail-on-source-change: false` |
 | An `overrides` / `resolutions` entry is added or changed | yes | `fail-on-source-change: false` |
+| A dependency file that existed on the base branch is deleted or renamed | yes | `fail-on-file-removal: false` |
 
 Findings below your thresholds are still reported. They just don't fail the check.
 Ordinary upgrades (new version, new tarball from the same registry) are not flagged as source changes.
@@ -113,6 +114,7 @@ scan misses a PR that adds a root `postinstall` or repoints an override. pnpm co
 | `fail-on-severity` | `low` | Lowest severity that blocks: `low`, `moderate`, `high`, `critical`, or `none`. Known malware blocks regardless. |
 | `fail-on-install-script` | `true` | Block on new install scripts (see the table above) |
 | `fail-on-source-change` | `true` | Block on repointed or swapped tarballs and changed overrides |
+| `fail-on-file-removal` | `true` | Block when a dependency file from the base branch is deleted or renamed in the PR — there is nothing left to diff, and a dropped lockfile can hide supply-chain changes. `false` reports it as a warning. |
 | `fail-on-error` | `false` | Fail when the scan itself can't run (npmscan.com unreachable, file over 8 MB). By default this is a warning, so an outage never blocks your merges. If the API hangs, the action gives up within about 5 minutes per file, so give the job at least 5 minutes per scanned file plus some slack (10 for one file, 20 for three). Otherwise a timed-out job fails the check anyway. |
 | `comment` | `always` | When to post the PR comment: `always`, `on-findings` (only when something is flagged or the scan fails) or `never`. With `on-findings`, an earlier comment is still updated, so fixed findings don't linger. The report always goes to the job summary. |
 | `github-token` | `${{ github.token }}` | Token used to post the PR comment |
@@ -122,7 +124,7 @@ scan misses a PR that adds a root `postinstall` or repoints an override. pnpm co
 
 | Output | Description |
 |---|---|
-| `flagged-count` | Findings across all scanned files (empty if nothing was scanned) |
+| `flagged-count` | Findings across all scanned files, including removed dependency files (empty if nothing was scanned and nothing was flagged) |
 | `blocking-count` | Findings that meet the thresholds. These fail the check in `mode: block`. |
 | `error-count` | Files that could not be scanned |
 

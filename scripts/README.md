@@ -17,6 +17,8 @@ action.yml inputs ──env──▶ scan.sh
   2. for each file: before = git cat-file blob $BASE_SHA:file (or an empty placeholder if the PR adds it)
                     after  = git cat-file blob HEAD:file (never the working tree)
                     error if either side isn't a regular file (symlink, submodule): nothing is read or sent
+                    removed if the file existed on the base branch but is gone from the PR: no API call,
+                    but render.jq reports it as a finding (blocking unless fail-on-file-removal: false),
                     skip if unchanged, error if > 8 MB
                     POST {before, after} → https://npmscan.com/api/analysis/dependency-diff
                     append {file, status, isNew, reason, result} to entries.jsonl
@@ -39,6 +41,7 @@ Supported files: `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `ya
 | Source change | `sourceIntegrityChanged` or `identityMismatch` | `fail-on-source-change` |
 | Root lifecycle script changes | `projectLifecycleChanges` | `fail-on-install-script` |
 | `overrides` / `resolutions` changes | `overridesChanges` | `fail-on-source-change` |
+| Dependency file deleted or renamed in the PR | entry status `removed` (no API call) | `fail-on-file-removal` |
 
 A finding is **blocking** if it meets those thresholds. It only fails the check in `mode: block`; in `mode: warn` the same findings are reported as "would block".
 
@@ -64,7 +67,7 @@ CI ([`.github/workflows/test.yml`](../.github/workflows/test.yml)) runs the suit
   - In bash, pass them through `esc_data`/`esc_prop` before they reach a `::workflow command::`.
   - Links are only rendered to `https://npmscan.com/...`.
 - **Keep `render.jq` pure.** All I/O stays in `scan.sh`, so new behaviour can be tested from fixtures.
-- **Output contract:** `flagged-count` stays empty when nothing was scanned (documented). There is one comment per step (the marker includes the file list). The table shows at most 50 packages per file, and `scan.sh` truncates the comment at 60,000 characters as a backstop.
+- **Output contract:** `flagged-count` stays empty when nothing was scanned and nothing was flagged (documented). There is one comment per step (the marker includes the file list). The table shows at most 50 packages per file, and `scan.sh` truncates the comment at 60,000 characters as a backstop.
 - If you change an input or output, update `action.yml`, the inputs table in the root [`README.md`](../README.md) and npmscan.com/docs/github-action.
 
 ### Releasing

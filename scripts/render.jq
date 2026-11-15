@@ -1,7 +1,7 @@
 # Turns per-file npmscan results into counts, a markdown report and annotations.
 #
-# Input:  array of {file, status: "scanned"|"error"|"skipped", isNew, reason, result}
-# $cfg:   {marker, mode, severity, failInstall, failSource, failOnError}
+# Input:  array of {file, status: "scanned"|"error"|"removed"|"skipped", isNew, reason, result}
+# $cfg:   {marker, mode, severity, failInstall, failSource, failOnError, failRemoval}
 # Output: {scanned, errors, flagged, blocking, markdown, annotations}
 
 def enforce: $cfg.mode == "block";
@@ -103,9 +103,12 @@ def advisories_block:
     end;
 
 def file_section:
-  ([ "### \(.file | code)\(if .isNew then " · new in this PR" else "" end)" ]
+  ([ "### \(.file | code)\(if .isNew then " · new in this PR" elif .status == "removed" then " · removed in this PR" else "" end)" ]
    + if .status == "error" then
        [ "> [!WARNING]\n> Scan failed: \(.reason | prose(300))" ]
+     elif .status == "removed" then
+       [ "> [!WARNING]\n> This file existed on the base branch but is gone from this PR (deleted or renamed), so its dependency changes can't be reviewed. Removing a lockfile can hide supply-chain changes, so this is reported as a finding."
+         + (if $cfg.failRemoval then " Set `fail-on-file-removal: false` to report it without blocking." else "" end) ]
      else
        .result as $r
        | [ "\($r.totalAdded // 0) added · \($r.totalRemoved // 0) removed · \($r.totalChanged // 0) changed · **\(.flagged) flagged**" ]
@@ -156,6 +159,14 @@ map(
     # show its summary rather than silently reporting nothing.
     | .unexplained = (.flagged == 0 and ($r.flaggedCount // 0) > 0)
     | if .unexplained then .flagged = $r.flaggedCount else . end
+  elif .status == "removed" then
+    # Nothing left to scan, but a deleted or renamed dependency file must not
+    # sail through as "skipped": count it as a finding, blocking unless the
+    # user opted out with fail-on-file-removal: false.
+    .packages = [] | .project = []
+    | .flagged = 1
+    | .blocking = (if $cfg.failRemoval then 1 else 0 end)
+    | .unexplained = false
   else .packages = [] | .project = [] | .flagged = 0 | .blocking = 0 | .unexplained = false end
 ) as $files
 | ($files | map(select(.status == "scanned")) | length) as $scanned
@@ -182,13 +193,18 @@ map(
       ( if ($skipped | length) > 0 then
           "<sub>Not scanned: " + ($skipped | map("\(.file | code) (\(.reason | prose(60)))") | join(", ")) + "</sub>"
         else empty end ),
-      "<sub>`mode: \($cfg.mode)` · `fail-on-severity: \($cfg.severity)` · `fail-on-install-script: \($cfg.failInstall)` · `fail-on-source-change: \($cfg.failSource)` · Scanned by [npmscan.com](https://npmscan.com) · [Docs](https://npmscan.com/docs/github-action)</sub>"
+      "<sub>`mode: \($cfg.mode)` · `fail-on-severity: \($cfg.severity)` · `fail-on-install-script: \($cfg.failInstall)` · `fail-on-source-change: \($cfg.failSource)` · `fail-on-file-removal: \($cfg.failRemoval)` · Scanned by [npmscan.com](https://npmscan.com) · [Docs](https://npmscan.com/docs/github-action)</sub>"
     ] | join("\n\n")),
     annotations: [
-      $files[] | (.packages[], .project[]) | select(.risky)
+      ( $files[] | select(.status == "removed")
+        | { level: (if .blocking > 0 and enforce then "error" else "warning" end),
+            file, kind: "file", name: (.file | clean(200)), version: "",
+            title: "npmscan: dependency file removed",
+            message: ("\(.file) existed on the base branch but was deleted or renamed in this PR, so its dependency changes can't be reviewed" | clean(500)) } ),
+      ( $files[] | (.packages[], .project[]) | select(.risky)
       | { level: (if .blocking and enforce then "error" else "warning" end),
           file, kind, name: (.name | clean(200)), version: (.after // "" | clean(100)),
           title: "npmscan: \(.name | clean(80))",
-          message: (annotation_message | clean(500)) }
+          message: (annotation_message | clean(500)) } )
     ]
   }

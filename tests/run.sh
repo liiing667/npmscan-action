@@ -414,6 +414,55 @@ assert_contains "$OUTPUT" "blocking-count=1"
 
 api_calls() { if [ -f "$LOG/curl.calls" ]; then wc -l < "$LOG/curl.calls" | tr -d ' '; else echo 0; fi; }
 
+t "a dependency file deleted in the PR blocks by default"
+new_repo package.json '{"dependencies":{"ms":"2.1.3"}}'
+rm "$REPO/package.json"
+head_commit
+run_scan FAKE_RESPONSE="$FIX/clean.json"
+assert_eq "$(api_calls)" 0 "API calls"
+assert_eq "$CODE" 1 "exit code"
+assert_contains "$OUTPUT" "flagged-count=1"
+assert_contains "$OUTPUT" "blocking-count=1"
+assert_contains "$OUTPUT" "error-count=0"
+assert_contains "$COMMENT" '### `package.json` · removed in this PR'
+assert_contains "$COMMENT" "❌ **1 finding blocks this PR.**"
+assert_contains "$COMMENT" "deleted or renamed"
+assert_not_contains "$COMMENT" "No dependency file changes left to scan"
+assert_contains "$OUT" "::error file=package.json,title=npmscan%3A dependency file removed"
+
+t "a deleted file updates a stale comment instead of clearing it to clean"
+run_scan FAKE_RESPONSE="$FIX/clean.json" \
+  GH_COMMENTS='[{"id":41,"body":"<!-- npmscan-action:package.json -->\n## old findings"}]'
+assert_contains "$GHLOG" "-X PATCH repos/acme/app/issues/comments/41"
+assert_contains "$COMMENT" "removed in this PR"
+assert_not_contains "$COMMENT" "No dependency file changes left to scan"
+
+t "fail-on-file-removal: false downgrades a deleted file to a warning"
+run_scan FAKE_RESPONSE="$FIX/clean.json" INPUT_FAIL_ON_FILE_REMOVAL=false
+assert_eq "$CODE" 0 "exit code"
+assert_contains "$OUTPUT" "flagged-count=1"
+assert_contains "$OUTPUT" "blocking-count=0"
+assert_contains "$COMMENT" "none at or above the configured thresholds"
+assert_contains "$OUT" "::warning file=package.json,title=npmscan%3A dependency file removed"
+
+t "mode: warn reports a deleted file without failing"
+run_scan FAKE_RESPONSE="$FIX/clean.json" INPUT_MODE=warn
+assert_eq "$CODE" 0 "exit code"
+assert_contains "$COMMENT" "would block this PR"
+
+t "a deleted file is not masked by another clean file"
+new_repo package.json '{"dependencies":{"ms":"2.1.3"}}' packages/a/package.json '{"dependencies":{"ms":"2.1.2"}}'
+rm "$REPO/package.json"
+head_commit packages/a/package.json '{"dependencies":{"ms":"2.1.3"}}'
+run_scan FAKE_RESPONSE="$FIX/clean.json" INPUT_FILES='package.json
+packages/a/package.json'
+assert_eq "$(api_calls)" 1 "API calls"
+assert_eq "$CODE" 1 "exit code"
+assert_contains "$COMMENT" "❌ **1 finding blocks this PR.**"
+assert_contains "$COMMENT" '### `package.json` · removed in this PR'
+assert_contains "$COMMENT" '### `packages/a/package.json`'
+assert_not_contains "$COMMENT" "✅ No risky dependency changes found."
+
 t "a dependency file swapped for a symlink is never read or sent"
 new_repo package.json '{"dependencies":{"ms":"2.1.2"}}'
 printf 'GH_TOKEN=npmscan-test-secret\n' > "$T/runner-secret"
@@ -466,6 +515,8 @@ run_scan INPUT_FAIL_ON_SEVERITY=severe
 assert_eq "$CODE" 1 "bad severity"
 run_scan INPUT_FAIL_ON_ERROR=maybe
 assert_eq "$CODE" 1 "bad boolean"
+run_scan INPUT_FAIL_ON_FILE_REMOVAL=maybe
+assert_eq "$CODE" 1 "bad file-removal boolean"
 run_scan INPUT_COMMENT=sometimes
 assert_eq "$CODE" 1 "bad comment"
 assert_contains "$OUT" "Input 'comment' must be always, on-findings or never"
